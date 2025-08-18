@@ -43,6 +43,9 @@ RUN pip install --no-cache-dir \
     "tifffile>=2022.8.12" \
     "future>=0.16.0"
 
+# 4.2) MultiTalk needs einops
+RUN pip install --no-cache-dir einops==0.8.0
+
 # Worker libs
 RUN pip install --no-cache-dir runpod requests boto3 soundfile librosa numpy scipy pillow tqdm opencv-python-headless
 
@@ -54,10 +57,12 @@ ENV HF_HOME=/workspace/.cache/huggingface \
 # 5) Build-time sanity check — fail the build if torchvision ops (nms) are missing
 RUN python3 - <<'PY'
 import torch, torchvision
+import einops
 print("Torch:", torch.__version__, "| CUDA:", torch.version.cuda, "| CUDA avail:", torch.cuda.is_available())
 print("TorchVision:", torchvision.__version__)
 from torchvision.ops import nms
 print("torchvision.ops.nms OK")
+print("einops:", einops.__version__)
 PY
 
 # Runtime
