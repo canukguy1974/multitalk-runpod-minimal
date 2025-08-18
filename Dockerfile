@@ -22,7 +22,7 @@ RUN sed -i 's/^\s*torch[^#]*/# pinned in Dockerfile/g' /MultiTalk/requirements.t
     sed -i 's/^\s*torchvision[^#]*/# pinned in Dockerfile/g' /MultiTalk/requirements.txt && \
     sed -i 's/^\s*torchaudio[^#]*/# pinned in Dockerfile/g' /MultiTalk/requirements.txt
 # OPTIONAL (faster attention; comment in if you want)
-RUN pip install flash_attn==2.7.4.post1 --no-build-isolation
+#RUN pip install flash_attn==2.7.4.post1 --no-build-isolation
 
 # python deps
 RUN pip install --no-cache-dir --no-deps -r /MultiTalk/requirements.txt || true
