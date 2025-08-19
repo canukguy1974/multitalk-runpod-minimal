@@ -19,6 +19,13 @@ RUN sed -i 's/^\s*torch[^#]*/# pinned in Dockerfile/g' /MultiTalk/requirements.t
     sed -i '/^gradio[[:space:]=<>]/ s/^/# not needed in serverless /' /MultiTalk/requirements.txt && \
     sed -i '/^optimum-quanto[[:space:]=<>]/ s/^/# not needed in serverless /' /MultiTalk/requirements.txt
 
+
+# Runtime deps used by diffusers/transformers
+RUN pip install --no-cache-dir \
+    "huggingface-hub>=0.34.0,<1.0" \
+    "safetensors>=0.4.3" \
+    "regex!=2019.12.17"
+
 # ---- Pinned Torch stack (CUDA 12.1) ----
 # Use the matching cu121 wheels for torch/vision/audio 2.4.x
 RUN pip install --index-url https://download.pytorch.org/whl/cu121 --extra-index-url https://pypi.org/simple \
@@ -36,12 +43,18 @@ RUN pip install --no-cache-dir runpod requests soundfile librosa numpy scipy pil
 
 # Build-time sanity checks (fail fast if kernels/ops missing)
 RUN python3 - <<'PY'
-import torch, torchvision, xformers, einops
-print("Torch:", torch.__version__, "CUDA:", torch.version.cuda, "CUDA avail:", torch.cuda.is_available())
-print("TorchVision:", torchvision.__version__)
-from torchvision.ops import nms
-import xformers.ops as xo
-print("torchvision.ops.nms OK; xformers.ops OK; einops", einops.__version__)
+import sys, traceback
+try:
+    import torch, torchvision, xformers, einops, diffusers, transformers, huggingface_hub, safetensors, regex
+    from torchvision.ops import nms
+    print("Torch:", torch.__version__, "CUDA:", torch.version.cuda, "| CUDA avail:", torch.cuda.is_available())
+    print("TorchVision:", torchvision.__version__, "| nms OK")
+    print("xformers:", xformers.__version__, "| einops:", einops.__version__)
+    print("diffusers:", diffusers.__version__, "| transformers:", transformers.__version__)
+    print("hf-hub:", huggingface_hub.__version__, "| safetensors:", safetensors.__version__)
+    print("regex OK:", bool(regex.__version__))
+except Exception:
+    traceback.print_exc(); sys.exit(1)
 PY
 
 # Worker
