@@ -1,6 +1,7 @@
+# Dockerfile
 FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 
-# OS deps (minimal, headless)
+# OS deps
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     git curl ffmpeg libsndfile1 python3 python3-pip python3-dev build-essential \
     && rm -rf /var/lib/apt/lists/*
@@ -8,56 +9,70 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
 # Fresh pip
 RUN python3 -m pip install --upgrade pip setuptools wheel
 
-# Pull MultiTalk
+# ---------- Torch stack (cu121 pinned) ----------
+RUN pip install --extra-index-url https://download.pytorch.org/whl/cu121 \
+    torch==2.4.1+cu121 torchvision==0.19.1+cu121 torchaudio==2.4.1+cu121
+
+# Memory/attn helpers
+RUN pip install xformers==0.0.28 einops==0.8.0 \
+    huggingface-hub==0.24.6 safetensors==0.4.3 regex==2024.7.24 \
+    soundfile librosa pyloudnorm
+
+# ---------- MultiTalk ----------
 WORKDIR /
 RUN git clone --depth 1 https://github.com/MeiGen-AI/MultiTalk.git /MultiTalk
 
-# Prevent MultiTalk's requirements from overwriting our pinned torch stack or pulling gradio
+# prevent torch wheels from requirements
 RUN sed -i 's/^\s*torch[^#]*/# pinned in Dockerfile/g' /MultiTalk/requirements.txt && \
     sed -i 's/^\s*torchvision[^#]*/# pinned in Dockerfile/g' /MultiTalk/requirements.txt && \
-    sed -i 's/^\s*torchaudio[^#]*/# pinned in Dockerfile/g' /MultiTalk/requirements.txt && \
-    sed -i '/^gradio[[:space:]=<>]/ s/^/# not needed in serverless /' /MultiTalk/requirements.txt && \
-    sed -i '/^optimum-quanto[[:space:]=<>]/ s/^/# not needed in serverless /' /MultiTalk/requirements.txt
+    sed -i 's/^\s*torchaudio[^#]*/# pinned in Dockerfile/g' /MultiTalk/requirements.txt
 
+RUN pip install -r /MultiTalk/requirements.txt --no-deps
 
-# Runtime deps used by diffusers/transformers
-RUN pip install --no-cache-dir \
-    "huggingface-hub>=0.34.0,<1.0" \
-    "safetensors>=0.4.3" \
-    "regex!=2019.12.17"
+# ---------- SadTalker (optional fast engine) ----------
+RUN git clone --depth 1 https://github.com/OpenTalker/SadTalker.git /SadTalker
+WORKDIR /SadTalker
+# lightweight deps; torch already installed
+RUN pip install -r requirements.txt --no-deps || true
 
-# ---- Pinned Torch stack (CUDA 12.1) ----
-# Use the matching cu121 wheels for torch/vision/audio 2.4.x
-RUN pip install --index-url https://download.pytorch.org/whl/cu121 --extra-index-url https://pypi.org/simple \
-    torch==2.4.1+cu121 torchvision==0.19.1+cu121 torchaudio==2.4.1+cu121
+# ---------- Wav2Lip (fastest lipsync) ----------
+WORKDIR /
+RUN git clone --depth 1 https://github.com/Rudrabha/Wav2Lip.git /Wav2Lip
+WORKDIR /Wav2Lip
+RUN pip install opencv-python==4.9.0.80 ffmpeg-python==0.2.0 numba==0.59.1 --no-cache-dir
 
-# xformers for this stack (has prebuilt cu121 wheel) + einops
-RUN pip install --index-url https://download.pytorch.org/whl/cu121 xformers==0.0.28 && \
-    pip install einops==0.8.0
+# Download Wav2Lip weights (small, ~150MB)
+RUN curl -L -o /Wav2Lip/Wav2Lip.pth \
+    https://github.com/anishhegeman/Wav2Lip-weights/releases/download/v1.0/Wav2Lip.pth
 
-# Rest of MultiTalk deps WITHOUT touching the torch stack
-RUN pip install --no-cache-dir --no-deps -r /MultiTalk/requirements.txt || true
+# ---------- ElevenLabs client ----------
+RUN pip install elevenlabs==1.9.0
 
-# Runtime deps used by the handler
-RUN pip install --no-cache-dir runpod requests soundfile librosa numpy scipy pillow tqdm opencv-python-headless
+# ---------- App code ----------
+WORKDIR /app
+COPY rp_handler.py /app/rp_handler.py
+COPY warmup.py /app/warmup.py
+# Optional: include a small prebaked idle.mp4 (3 sec, 480p, 12fps)
+COPY assets/idle_480_12fps.mp4 /app/assets/idle_480_12fps.mp4
 
-# Build-time sanity checks (fail fast if kernels/ops missing)
+# Caches/weights
+ENV HF_HOME=/workspace/hf_cache
+ENV WEIGHTS_DIR=/workspace/weights
+ENV TORCH_ALLOW_TF32=1
+ENV NVIDIA_TF32_OVERRIDE=1
+ENV OMP_NUM_THREADS=1
+
+# Pre-flight: verify core imports at build time
 RUN python3 - <<'PY'
-import sys, traceback
-try:
-    import torch, torchvision, xformers, einops, diffusers, transformers, huggingface_hub, safetensors, regex
-    from torchvision.ops import nms
-    print("Torch:", torch.__version__, "CUDA:", torch.version.cuda, "| CUDA avail:", torch.cuda.is_available())
-    print("TorchVision:", torchvision.__version__, "| nms OK")
-    print("xformers:", xformers.__version__, "| einops:", einops.__version__)
-    print("diffusers:", diffusers.__version__, "| transformers:", transformers.__version__)
-    print("hf-hub:", huggingface_hub.__version__, "| safetensors:", safetensors.__version__)
-    print("regex OK:", bool(regex.__version__))
-except Exception:
-    traceback.print_exc(); sys.exit(1)
+import torch, torchvision, torchaudio
+from torchvision.ops import nms
+import importlib
+importlib.import_module("huggingface_hub")
+print("Sanity OK")
 PY
 
-# Worker
-WORKDIR /workspace
-COPY rp_handler.py /workspace/rp_handler.py
-CMD ["python3", "-u", "/workspace/rp_handler.py"]
+# Entrypoint (RunPod serverless expects a module-level handler(event))
+CMD ["python3", "-c", "import warmup; import rp_handler; import runpod; runpod.serverless.start({'handler': rp_handler.handler})"]
+
+WORKDIR /app
+COPY app/ /app/

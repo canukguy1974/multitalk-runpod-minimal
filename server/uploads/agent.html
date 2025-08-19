@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Video Chatbot Test</title>
+  <style>body{font-family:system-ui;margin:20px} video{max-width:480px;display:block;margin-top:16px}</style>
+</head>
+<body>
+  <h1>Video Chatbot</h1>
+  <form id="f" enctype="multipart/form-data">
+    <div>Portrait image: <input type="file" name="image" accept="image/*" required></div>
+    <div>Say something (text): <input name="text" placeholder="Hi, where's my order?"></div>
+    <div>…or upload your voice: <input type="file" name="audio" accept="audio/*"></div>
+    <button>Send</button>
+  </form>
+
+  <pre id="log"></pre>
+  <video id="v" controls></video>
+
+  <script>
+    const f = document.getElementById('f');
+    const log = document.getElementById('log');
+    const v = document.getElementById('v');
+
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      log.textContent = "Working…";
+      const fd = new FormData(f);
+      const r = await fetch('/api/talking-reply', { method: 'POST', body: fd });
+      const j = await r.json();
+      log.textContent = JSON.stringify(j, null, 2);
+      if (j.videoUrl) v.src = j.videoUrl;
+    });
+  </script>
+</body>
+</html>
